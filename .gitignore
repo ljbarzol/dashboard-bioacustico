@@ -1,0 +1,34 @@
+# Entornos y caché
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secretos y autenticación (nunca versionar)
+.streamlit/secrets.toml
+.gh/
+.env
+.env.*
+
+# Excel de origen (no van en el repositorio; el dashboard usa los Parquet)
+*.xlsx
+*.xls
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Inventario o muestras fuera de data/
+drive_inventory*
+drive_sample/

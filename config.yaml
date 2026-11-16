@@ -1,0 +1,57 @@
+proyecto: FIEC-005-2026
+zona_horaria: America/Guayaquil
+titulo: Dashboard bioacústico del Campus Prosperina
+version: "1.0"
+
+# Todas las rutas son relativas a la raíz del repositorio (donde está app.py).
+# El dashboard lee solo los Parquet y los WAV de muestra; no necesita los Excel.
+# Los Excel se usan únicamente con: python -m pipeline.ingest
+rutas:
+  tabla_final: data/TablaFinal.xlsx
+  catalogo: data/Lista_Especies.xlsx
+  detecciones_parquet: data/detecciones.parquet
+  catalogo_parquet: data/catalogo.parquet
+  audios_muestra: data/wav
+
+columnas_tabla_final:
+  nombre_cientifico: "Nombre científico"
+  nombre_ingles: "Nombre inglés"
+  nombre_espanol: "Nombre español"
+  iucn: "IUCN"
+  gremio: "Gremio alimenticio"
+  dispositivo: "Dispositivo"
+  fecha: "Día"
+  periodo: "Periodo"
+  hora: "Hora"
+  inicio_s: "Inicio (s)"
+  fin_s: "Final (s)"
+  duracion_segmento_s: "Duración (s)"
+  freq_low_hz: "Low Freq (Hz)"
+  freq_high_hz: "High Freq (Hz)"
+  freq_peak_hz: "Peak Freq (Hz)"
+  valid: "Valid"
+  confidence: "Confidence Score"
+
+columnas_catalogo:
+  nombre_cientifico: "Nombre cientifico"
+  nombre_ingles: "Nombre inglés"
+  nombre_espanol: "Nombre español"
+  iucn: "IUCN"
+  gremio: "Gremio alimenticio"
+
+alias_periodo:
+  Sunrise: Mañana
+  Sunset: Tarde
+
+audio_esperado:
+  sample_rate_hz: 48000
+  n_canales: 1
+  duracion_nominal_s: 55
+
+coros:
+  manana: ["05:30", "08:00"]
+  tarde: ["17:00", "21:00"]
+
+filtros_por_defecto:
+  solo_valid: true
+  confidence_min: 0.0

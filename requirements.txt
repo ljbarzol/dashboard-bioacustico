@@ -1,0 +1,12 @@
+# Compatible con Python 3.12 y 3.13 (Streamlit Community Cloud: elegir 3.12).
+# librosa 1.0 y numpy 2.5 requieren Python >= 3.12; no instalan en 3.11.
+streamlit==1.67.0
+pandas==3.1.1
+plotly==7.1.0
+pyarrow==26.0.1
+openpyxl==3.1.5
+librosa==1.0.1
+soundfile==0.14.0
+matplotlib==3.11.2
+numpy==2.5.4
+PyYAML==6.0.3
