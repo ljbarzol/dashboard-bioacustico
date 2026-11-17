@@ -10,3 +10,6 @@ soundfile==0.14.0
 matplotlib==3.11.2
 numpy==2.5.4
 PyYAML==6.0.3
+# Fuente opcional en Google Drive (solo lectura, cuenta de servicio)
+google-api-python-client==2.202.0
+google-auth==2.62.2

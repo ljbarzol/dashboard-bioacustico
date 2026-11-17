@@ -14,6 +14,9 @@ htmlcov/
 
 # Secretos y autenticación (nunca versionar)
 .streamlit/secrets.toml
+secrets.toml
+*service-account*.json
+*service_account*.json
 .gh/
 .env
 .env.*

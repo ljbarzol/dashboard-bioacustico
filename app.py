@@ -3,15 +3,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from lib.audio import describir_muestra, espectrograma, listar_muestras
-from lib.data import apply_filters, csv_bytes, load_config, load_tables, resolve_path
+from lib.audio import describir_muestra, espectrograma, listar_muestras, recortar_wav
+from lib.data import apply_filters, csv_bytes, load_config, resolve_path
+from lib.drive import DriveError
+from lib.fuente import Fuente, cargar_datos, wav_de_drive
 from lib.qc import chequeos_tabulares, hallazgos_frame
 
 NAVY = "#0A3D5C"
@@ -380,12 +382,115 @@ def render_calidad(df: pd.DataFrame, df_full: pd.DataFrame) -> None:
     )
 
 
-def render_explorador(cfg: dict, df: pd.DataFrame) -> None:
+def _reproductor(fuente_audio, titulo: str, dets: pd.DataFrame, clave: str) -> None:
+    """Reproduce un WAV (ruta o bytes) completo o solo el segmento de una detección."""
+    opciones = ["Archivo completo"]
+    if len(dets):
+        opciones.insert(0, "Solo el segmento de la detección")
+    modo = st.radio("Qué reproducir", opciones, horizontal=True, key=f"modo_{clave}")
+
+    marcas = list(zip(dets["inicio_s"], dets["fin_s"])) if len(dets) else []
+    try:
+        if modo.startswith("Solo") and len(dets):
+            etiquetas = [
+                f"{r.nombre_espanol} · {r.inicio_s:g}–{r.fin_s:g} s · confianza {r.confidence:.2f}"
+                for r in dets.itertuples()
+            ]
+            c1, c2 = st.columns([3, 1])
+            i = c1.selectbox(
+                "Detección", range(len(etiquetas)), format_func=lambda k: etiquetas[k], key=f"det_{clave}"
+            )
+            margen = c2.slider("Margen (s)", 0.0, 5.0, 1.0, 0.5, key=f"margen_{clave}")
+            fila = dets.iloc[int(i)]
+            wav, t0, t1 = recortar_wav(fuente_audio, fila["inicio_s"], fila["fin_s"], margen)
+            st.audio(wav, format="audio/wav")
+            st.caption(
+                f"Segmento {t0:.1f}–{t1:.1f} s del archivo original "
+                f"(detección {fila['inicio_s']:g}–{fila['fin_s']:g} s ± {margen:g} s)."
+            )
+            fig, meta = espectrograma(
+                wav, f"{titulo} · {t0:.1f}–{t1:.1f} s", [(fila["inicio_s"], fila["fin_s"])], t0
+            )
+        else:
+            if isinstance(fuente_audio, (bytes, bytearray)):
+                st.audio(fuente_audio, format="audio/wav")
+            else:
+                st.audio(str(fuente_audio))
+            fig, meta = espectrograma(fuente_audio, titulo, marcas)
+            if marcas:
+                st.caption("Las franjas celestes del espectrograma marcan las detecciones de la tabla.")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Duración mostrada", f"{meta['duracion_s']} s")
+        m2.metric("Frecuencia de muestreo", f"{meta['sample_rate_hz']:,} Hz".replace(",", " "))
+        m3.metric("Muestras", f"{meta['n_muestras']:,}".replace(",", " "))
+        st.pyplot(fig, width='stretch')
+        plt_close(fig)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"No se pudo leer o graficar el audio: {exc}")
+
+
+_COLS_DET = ["nombre_espanol", "nombre_cientifico", "periodo", "hora", "inicio_s", "fin_s", "confidence", "valid"]
+
+
+def render_explorador(cfg: dict, df: pd.DataFrame, fuente: Fuente) -> None:
     st.subheader("Explorador de audio")
+    if fuente.drive:
+        render_explorador_drive(cfg, df, fuente)
+    else:
+        render_explorador_local(cfg, df)
+
+
+def render_explorador_drive(cfg: dict, df: pd.DataFrame, fuente: Fuente) -> None:
     st.caption(
-        "Escuche y vea el espectrograma de las grabaciones de muestra disponibles en este equipo. "
-        "El corpus completo de Drive se cargará bajo demanda en una versión posterior; "
-        "esta v1 no descarga ni modifica nada en Google Drive."
+        "Elija una grabación con detecciones y escúchela directamente desde Google Drive. "
+        "Solo se descarga ese archivo (unos 5 MB), en modo solo lectura; no se modifica nada en Drive."
+    )
+    if df.empty:
+        st.warning("Ninguna detección coincide con los filtros actuales.")
+        return
+    c1, c2, c3 = st.columns(3)
+    dev = c1.selectbox("Grabadora", sorted(df["dispositivo"].dropna().unique()), key="exp_dev")
+    sub = df[df["dispositivo"] == dev]
+    dias = sorted(pd.to_datetime(sub["fecha"]).dt.strftime("%Y-%m-%d").dropna().unique())
+    dia = c2.selectbox("Día", dias, key="exp_dia")
+    sub = sub[pd.to_datetime(sub["fecha"]).dt.strftime("%Y-%m-%d") == dia]
+    grupos = (
+        sub.groupby(["hora", "periodo", "periodo_codigo"], as_index=False)
+        .size()
+        .sort_values("hora")
+    )
+    etiquetas = [f"{g.hora} · {g.periodo} ({g.size} detecc.)" for g in grupos.itertuples()]
+    k = c3.selectbox("Grabación (hora)", range(len(etiquetas)), format_func=lambda i: etiquetas[i], key="exp_hora")
+    g = grupos.iloc[int(k)]
+    dets = sub[sub["hora"] == g["hora"]].sort_values("inicio_s")
+    st.dataframe(dets[_COLS_DET], width='stretch', hide_index=True)
+
+    clave = f"{dev}|{dia}|{g['hora']}"
+    if st.button("Escuchar desde Google Drive", type="primary", key="exp_cargar"):
+        st.session_state["audio_drive"] = clave
+    if st.session_state.get("audio_drive") != clave:
+        st.caption("Pulse el botón para descargar y reproducir esta grabación.")
+        return
+    try:
+        with st.spinner("Buscando y descargando el WAV desde Google Drive…"):
+            data, ruta = wav_de_drive(
+                fuente, dev, pd.Timestamp(dia), g["hora"], g["periodo_codigo"], cfg
+            )
+    except DriveError as exc:
+        st.error(str(exc))
+        return
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"No se pudo descargar el audio: {exc}")
+        return
+    st.caption(f"Archivo en Drive: {ruta}")
+    _reproductor(data, ruta.split("/")[-1], dets, clave="drive")
+
+
+def render_explorador_local(cfg: dict, df: pd.DataFrame) -> None:
+    st.caption(
+        "Escuche y vea el espectrograma de las grabaciones de muestra incluidas en el repositorio. "
+        "Si se conecta Google Drive (ver «Fuente de datos» en la barra lateral), podrá escuchar "
+        "cualquier grabación del corpus bajo demanda."
     )
     wav_dir = resolve_path(cfg["rutas"]["audios_muestra"])
     muestras = listar_muestras(wav_dir)
@@ -402,43 +507,25 @@ def render_explorador(cfg: dict, df: pd.DataFrame) -> None:
     c1.metric("Grabadora", info["dispositivo"])
     c2.metric("Tipo", info["tipo"])
     c3.write(info["sello"])
-    st.audio(str(path))
 
-    try:
-        fig, meta = espectrograma(path)
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Duración", f"{meta['duracion_s']} s")
-        m2.metric("Frecuencia de muestreo", f"{meta['sample_rate_hz']:,} Hz".replace(",", " "))
-        m3.metric("Muestras", f"{meta['n_muestras']:,}".replace(",", " "))
-        st.pyplot(fig, width='stretch')
-        plt_close(fig)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"No se pudo calcular el espectrograma: {exc}")
-
-    # Si el sello coincide con filas de la tabla, mostrarlas.
-    relacionados = pd.DataFrame()
-    if info["dispositivo"] != "—" and "hora" in df.columns:
-        sello_hora = None
-        if ":" in info["sello"]:
-            sello_hora = info["sello"].split(" ")[0]
-        if sello_hora:
-            relacionados = df[
-                (df["dispositivo"] == info["dispositivo"]) & (df["hora"] == sello_hora)
-            ][
-                [
-                    "nombre_espanol",
-                    "nombre_cientifico",
-                    "periodo",
-                    "hora",
-                    "inicio_s",
-                    "fin_s",
-                    "confidence",
-                    "valid",
-                ]
+    # Si el sello coincide con filas de la tabla, unirlas (solo para WAV originales).
+    relacionados = pd.DataFrame(columns=_COLS_DET)
+    es_clip = "segment" in path.name.lower()
+    if info["dispositivo"] != "—" and "hora" in df.columns and ":" in info["sello"] and not es_clip:
+        sello_hora = info["sello"].split(" ")[0]
+        relacionados = df[(df["dispositivo"] == info["dispositivo"]) & (df["hora"] == sello_hora)]
+        m = re.search(r"(20\d{6})_\d{6}", path.name)
+        if m and len(relacionados):
+            relacionados = relacionados[
+                pd.to_datetime(relacionados["fecha"]).dt.strftime("%Y%m%d") == m.group(1)
             ]
+        relacionados = relacionados.sort_values("inicio_s")
+
+    _reproductor(path, path.name, relacionados, clave=f"local_{path.name}")
+
     if len(relacionados):
         st.markdown("**Detecciones de la tabla que coinciden con esta muestra (según filtros)**")
-        st.dataframe(relacionados, width='stretch', hide_index=True)
+        st.dataframe(relacionados[_COLS_DET], width='stretch', hide_index=True)
     else:
         st.caption("No hay detecciones de la tabla filtrada unidas a esta muestra, o es un clip de recorte.")
 
@@ -451,33 +538,8 @@ def plt_close(fig) -> None:
     plt.close(fig)
 
 
-def render_michael() -> None:
-    st.subheader("Análisis exploratorio de Michael")
-    st.caption("Espacio reservado para integrar el trabajo ya existente y, más adelante, sus proyecciones.")
-    st.markdown(
-        """
-Esta página se llenará con el análisis exploratorio de Michael, sin recalcularlo aquí.
-
-**Lo que ya existe y se reutilizará**
-
-- Figuras de comunidad por gremio alimenticio, detecciones por periodo del día y especies con más detecciones
-  (en esta v1 esas tres vistas ya se recrean de forma interactiva en las pestañas *Especies y gremios* y *Actividad por hora*).
-- Gráficos de espacio acústico (ASU) por grabadora y del conjunto, que se mostrarán aquí cuando estén disponibles en local.
-
-**Lo que vendrá después, cuando se entregue una tabla unible**
-
-- *Embeddings*, proyección UMAP o *clusters*, unidos a cada detección por una clave acordada.
-- Filtro del resto del dashboard por *cluster* o por región de la proyección.
-
-Hasta entonces no se simulan nubes de puntos con datos ficticios. Si usted es Michael o trabaja con él,
-la clave de unión recomendada es dispositivo + día + hora + inicio del segmento + nombre científico
-(o el nombre del clip de 3 s).
-"""
-    )
-    st.info("Contrato visible, sin datos inventados. El resto de las pestañas ya funciona con la tabla real.")
-
-
 def sidebar_filters(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### Filtros")
     st.sidebar.caption("Los gráficos y las cifras de todas las pestañas respetan esta selección.")
 
@@ -548,7 +610,7 @@ def main() -> None:
     )
 
     try:
-        df, catalogo = load_tables(cfg)
+        df, catalogo, fuente = cargar_datos(cfg)
     except FileNotFoundError as exc:
         st.error(str(exc))
         st.stop()
@@ -564,7 +626,6 @@ def main() -> None:
             "Grabadoras",
             "Calidad de datos",
             "Explorador de audio",
-            "Análisis de Michael",
         ]
     )
     with tabs[0]:
@@ -578,9 +639,7 @@ def main() -> None:
     with tabs[4]:
         render_calidad(filtrado, df)
     with tabs[5]:
-        render_explorador(cfg, filtrado)
-    with tabs[6]:
-        render_michael()
+        render_explorador(cfg, filtrado, fuente)
 
 
 if __name__ == "__main__":

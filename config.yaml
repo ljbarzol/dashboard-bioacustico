@@ -55,3 +55,11 @@ coros:
 filtros_por_defecto:
   solo_valid: true
   confidence_min: 0.0
+
+# Fuente opcional en Google Drive (SOLO LECTURA). Sin cuenta de servicio en los
+# secrets, el dashboard usa los Parquet de data/. El ID se puede reemplazar en
+# los secrets ([drive] folder_id) o desde la barra lateral, sin tocar el código.
+drive:
+  folder_id: "1yjJKnCO6NgIXe88RHFza3SsOC1mC0Twf"   # AudioMoth - CONDESAN
+  tolerancia_segundos: 1    # el reloj de AM002 a veces marca :01
+  max_audio_mb: 25          # límite por WAV descargado (un WAV de 55 s pesa ~5,3 MB)
